@@ -11,14 +11,14 @@
     {
       "binding": "DB",
       "database_name": "personal-workspace-db",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "cc6c4974-2280-4247-9627-705d08512ebf",
       "migrations_dir": "migrations"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "FILES",
-      "id": "REPLACE_WITH_KV_NAMESPACE_ID"
+      "id": "d44b29d81fe9441484579dcddbddc85f"
     }
   ],
   "vars": {
