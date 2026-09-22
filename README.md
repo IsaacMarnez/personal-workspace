@@ -1,4 +1,4 @@
-# Personal Workspace V0.1.0
+# Personal Workspace V0.1.1
 
 Organizador personal PWA construido con React + Cloudflare Workers + D1 + Workers KV + Gemini API opcional (Interactions API).
 
@@ -11,72 +11,68 @@ Organizador personal PWA construido con React + Cloudflare Workers + D1 + Worker
 - PWA instalable en celular/laptop.
 - Endpoint opcional para Gemini.
 
-## 1. Requisitos locales
-Instala Node.js LTS y Git. Luego:
+## Configuración Cloudflare ya incluida
+Esta carpeta ya contiene los IDs que se crearon en Cloudflare:
+
+- D1 binding `DB` → `personal-workspace-db`
+  - Database ID: `cc6c4974-2280-4247-9627-705d08512ebf`
+- KV binding `FILES` → `personal-workspace-files`
+  - Namespace ID: `d44b29d81fe9441484579dcddbddc85f`
+- Gemini model: `gemini-3.8-flash`
+
+**No vuelvas a crear D1 ni KV.** Ya están configurados en `wrangler.jsonc`.
+
+## Base de datos
+La migración `migrations/0001_initial.sql` ya fue ejecutada en la D1 remota. Las tablas esperadas son:
+
+- `projects`
+- `tasks`
+- `attachments`
+- `focus_sessions`
+- `activity_log`
+- `settings`
+
+## Secretos que todavía debes crear en Cloudflare
+No se incluyen en GitHub ni en esta carpeta por seguridad:
+
+- `APP_PASSWORD` → contraseña con la que entrarás a la app.
+- `SESSION_SECRET` → cadena aleatoria larga (idealmente 32+ caracteres).
+- `GEMINI_API_KEY` → tu clave de Gemini API.
+
+Agrégalos como **Secrets** en el Worker `personal-workspace`.
+
+## Desarrollo local opcional
+Instala Node.js y ejecuta:
 
 ```bash
 npm install
-npx wrangler login
-```
-
-## 2. Crear D1
-```bash
-npx wrangler d1 create personal-workspace-db
-```
-Copia el `database_id` que devuelve y reemplaza `REPLACE_WITH_D1_DATABASE_ID` en `wrangler.jsonc`.
-
-## 3. Crear KV
-```bash
-npx wrangler kv namespace create PERSONAL_FILES
-```
-Copia el ID y reemplaza `REPLACE_WITH_KV_NAMESPACE_ID` en `wrangler.jsonc`.
-
-## 4. Aplicar base de datos
-```bash
-npx wrangler d1 migrations apply personal-workspace-db --remote
-```
-Acepta la confirmación.
-
-## 5. Secretos
-Configura una contraseña privada y un secreto largo para la cookie:
-
-```bash
-npx wrangler secret put APP_PASSWORD
-npx wrangler secret put SESSION_SECRET
-```
-
-Para generar un SESSION_SECRET puedes usar un gestor de contraseñas o cualquier cadena aleatoria larga (idealmente 32+ caracteres).
-
-Gemini es opcional:
-```bash
-npx wrangler secret put GEMINI_API_KEY
-```
-
-## 6. Desarrollo local
-Copia `.dev.vars.example` a `.dev.vars` y llena los valores solo para desarrollo local.
-
-```bash
 npm run dev
 ```
 
-## 7. Desplegar
+Para desarrollo local, copia `.dev.vars.example` a `.dev.vars` y agrega ahí los secretos. `.dev.vars` está ignorado por Git.
+
+## Build y despliegue
+Cloudflare debe usar:
+
+- Build command: `npm run build`
+- Deploy command: `npx wrangler deploy`
+- Root directory: `/`
+
+También puedes desplegar manualmente con:
+
 ```bash
 npm run deploy
 ```
-Wrangler mostrará tu URL `*.workers.dev`.
 
-## 8. GitHub
-```bash
-git init
-git add .
-git commit -m "Personal Workspace V0.1.0"
-git branch -M main
-git remote add origin TU_URL_DEL_REPOSITORIO
-git push -u origin main
-```
+## Correcciones incluidas en V0.1.1
+- Se agregó `src/vite-env.d.ts` para los tipos de Vite (`import.meta.env` y CSS).
+- Se corrigió `useRef` del temporizador Focus para React 19 / TypeScript actual.
+- Se eliminaron archivos `*.tsbuildinfo` del repositorio y se agregaron al `.gitignore`.
+- Se fijaron versiones de dependencias para evitar que `latest` cambie el build de forma inesperada.
+- Se conservaron los IDs reales de D1 y KV en `wrangler.jsonc`.
 
-## Notas de seguridad
-- `.dev.vars` está ignorado por Git.
-- Nunca pongas APP_PASSWORD, SESSION_SECRET ni GEMINI_API_KEY dentro de `wrangler.jsonc` o GitHub.
-- Los archivos se sirven únicamente detrás de la sesión privada.
-- La IA no lee tus tareas ni archivos automáticamente; solo recibe lo que se envía explícitamente al endpoint de Gemini.
+## Seguridad
+- Nunca subas `APP_PASSWORD`, `SESSION_SECRET` ni `GEMINI_API_KEY` a GitHub.
+- Los IDs de D1 y KV no son secretos y sí pueden permanecer en `wrangler.jsonc`.
+- Los archivos se sirven a través de la API autenticada.
+- Gemini solo recibe el texto enviado explícitamente desde la función de IA.
