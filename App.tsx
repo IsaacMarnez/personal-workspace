@@ -1,0 +1,296 @@
+import { useEffect, useRef, useState } from 'react';
+import {
+  Activity, AlertTriangle, Archive, BarChart3, CalendarDays, CheckCircle2, ChevronRight, CirclePlus,
+  Clock3, Columns3, FileArchive, FileImage, FileSpreadsheet, FileText, FolderKanban, Gauge, History,
+  Home, Inbox, LayoutDashboard, ListTodo, LogOut, Menu, Paperclip, Play, Plus, RefreshCw,
+  Repeat2, Search, Settings, Sparkles, Square, Timer, Trash2, Upload, Workflow, X, Zap
+} from 'lucide-react';
+import { api } from './api';
+import type { ActivityItem, Attachment, DashboardStats, FocusSession, Priority, Project, Task, TaskStatus } from './types';
+
+type View = 'home' | 'today' | 'tasks' | 'pipeline' | 'projects' | 'calendar' | 'focus' | 'routines' | 'files' | 'automations' | 'activity' | 'performance' | 'settings';
+
+const nav: Array<{ id: View; label: string; icon: typeof Home }> = [
+  { id: 'home', label: 'Inicio', icon: Home }, { id: 'today', label: 'Mi día', icon: Zap },
+  { id: 'tasks', label: 'Tareas', icon: ListTodo }, { id: 'pipeline', label: 'Pipeline', icon: Columns3 },
+  { id: 'projects', label: 'Proyectos', icon: FolderKanban }, { id: 'calendar', label: 'Calendario', icon: CalendarDays },
+  { id: 'focus', label: 'Focus', icon: Timer }, { id: 'routines', label: 'Rutinas', icon: Repeat2 },
+  { id: 'files', label: 'Archivos', icon: Paperclip }, { id: 'automations', label: 'Automatizaciones', icon: Workflow },
+  { id: 'activity', label: 'Actividad', icon: History }, { id: 'performance', label: 'Desempeño', icon: BarChart3 },
+  { id: 'settings', label: 'Configuración', icon: Settings },
+];
+
+const statusMeta: Record<TaskStatus, { label: string; icon: typeof Inbox }> = {
+  inbox: { label: 'Bandeja', icon: Inbox }, backlog: { label: 'Backlog', icon: Archive }, next: { label: 'Próximo', icon: ChevronRight },
+  in_progress: { label: 'En proceso', icon: Zap }, waiting: { label: 'En espera', icon: Clock3 }, review: { label: 'Revisión', icon: Search }, done: { label: 'Terminado', icon: CheckCircle2 },
+};
+
+const priorityLabel: Record<Priority, string> = { low: 'Baja', medium: 'Media', high: 'Alta' };
+
+function formatTime(seconds: number) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m} min`;
+  return `${Math.max(0, Math.floor(seconds))} s`;
+}
+function todayISO() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function isToday(date: string) { return new Date(date).toDateString() === new Date().toDateString(); }
+function formatDate(date?: string | null) {
+  if (!date) return 'Sin fecha';
+  return new Intl.DateTimeFormat('es-MX', { day: 'numeric', month: 'short' }).format(new Date(`${date}T12:00:00`));
+}
+function formatDateTime(date: string) {
+  return new Intl.DateTimeFormat('es-MX', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(date));
+}
+function fileIcon(type: string) {
+  if (type.startsWith('image/')) return FileImage;
+  if (type.includes('spreadsheet') || type.includes('excel')) return FileSpreadsheet;
+  if (type.includes('zip') || type.includes('archive')) return FileArchive;
+  return FileText;
+}
+function bytes(n: number) {
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function Login({ onLogin }: { onLogin: () => void }) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault(); setBusy(true); setError('');
+    try { await api.login(password); onLogin(); }
+    catch (e) { setError(e instanceof Error ? e.message : 'No se pudo entrar'); }
+    finally { setBusy(false); }
+  }
+  return <main className="login-shell"><section className="login-card"><div className="brand-mark"><CheckCircle2 /></div><span className="eyebrow">ESPACIO PRIVADO</span><h1>Personal Workspace</h1><p>Tu centro de mando personal para organizar, ejecutar y medir tu trabajo.</p><form onSubmit={submit}><label>Contraseña</label><input autoFocus type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••••••" /><button className="primary" disabled={busy}>{busy ? 'Entrando…' : 'Entrar'}</button>{error && <div className="error">{error}</div>}</form></section></main>;
+}
+
+function TaskModal({ projects, attachments, onClose, onSaved, onFilesChanged, initial }: {
+  projects: Project[];
+  attachments: Attachment[];
+  onClose: () => void;
+  onSaved: () => void;
+  onFilesChanged: () => void;
+  initial?: Task;
+}) {
+  const [title, setTitle] = useState(initial?.title || '');
+  const [description, setDescription] = useState(initial?.description || '');
+  const [priority, setPriority] = useState<Priority>(initial?.priority || 'medium');
+  const [status, setStatus] = useState<TaskStatus>(initial?.status || 'inbox');
+  const [due, setDue] = useState(initial?.due_date || '');
+  const [projectId, setProjectId] = useState(initial?.project_id || '');
+  const [busy, setBusy] = useState(false);
+  const [fileBusy, setFileBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const linkedFiles = initial ? attachments.filter(a => a.task_id === initial.id) : [];
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (!title.trim()) return;
+    setBusy(true);
+    try {
+      const payload = { title: title.trim(), description: description.trim() || null, priority, status, due_date: due || null, project_id: projectId || null };
+      if (initial) await api.updateTask(initial.id, payload); else await api.createTask(payload);
+      onSaved(); onClose();
+    } finally { setBusy(false); }
+  }
+  async function uploadToTask(file?: File) {
+    if (!file || !initial) return;
+    setFileBusy(true);
+    try { await api.upload(file, initial.id, projectId || undefined); onFilesChanged(); }
+    catch (e) { alert(e instanceof Error ? e.message : 'No se pudo subir el archivo'); }
+    finally { setFileBusy(false); if (fileRef.current) fileRef.current.value = ''; }
+  }
+
+  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+    <form className="modal" onSubmit={save}>
+      <div className="modal-head"><div><span className="eyebrow">{initial ? 'EDITAR' : 'NUEVA'} TAREA</span><h2>{initial ? 'Actualizar tarea' : 'Captura rápida'}</h2></div><button type="button" className="icon-button" onClick={onClose}><X /></button></div>
+      <label>Título<input autoFocus value={title} onChange={e => setTitle(e.target.value)} placeholder="¿Qué necesitas hacer?" /></label>
+      <label>Descripción<textarea rows={3} value={description} onChange={e => setDescription(e.target.value)} placeholder="Notas opcionales" /></label>
+      <div className="form-grid">
+        <label>Prioridad<select value={priority} onChange={e => setPriority(e.target.value as Priority)}><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option></select></label>
+        <label>Estado<select value={status} onChange={e => setStatus(e.target.value as TaskStatus)}>{Object.entries(statusMeta).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></label>
+        <label>Fecha<input type="date" value={due} onChange={e => setDue(e.target.value)} /></label>
+        <label>Proyecto<select value={projectId} onChange={e => setProjectId(e.target.value)}><option value="">Sin proyecto</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
+      </div>
+
+      {initial && <section className="task-files-block">
+        <div className="task-files-head"><div><span className="eyebrow">ARCHIVOS DE LA TAREA</span><strong>{linkedFiles.length ? `${linkedFiles.length} adjunto${linkedFiles.length === 1 ? '' : 's'}` : 'Sin archivos'}</strong></div><div><input hidden ref={fileRef} type="file" onChange={e => uploadToTask(e.target.files?.[0])} /><button type="button" className="ghost" onClick={() => fileRef.current?.click()} disabled={fileBusy}><Paperclip />{fileBusy ? 'Subiendo…' : 'Adjuntar archivo'}</button></div></div>
+        <div className="task-files-list">{linkedFiles.map(f => { const I = fileIcon(f.mime_type); return <div className="task-file" key={f.id}><I /><div><strong>{f.name}</strong><span>{bytes(f.size_bytes)}</span></div><a className="icon-button" href={`/api/files/${f.id}`} target="_blank" rel="noreferrer"><ChevronRight /></a><button type="button" className="icon-button danger" onClick={async () => { await api.deleteAttachment(f.id); onFilesChanged(); }}><Trash2 /></button></div>; })}{!linkedFiles.length && <span className="task-files-empty">Los archivos que adjuntes aquí quedarán ligados directamente a esta tarea.</span>}</div>
+      </section>}
+      {!initial && <div className="task-file-hint"><Paperclip /><span>Después de crear la tarea podrás adjuntarle imágenes, PDF, Office, ZIP y otros archivos directamente.</span></div>}
+
+      <div className="modal-actions"><button type="button" className="ghost" onClick={onClose}>Cancelar</button><button className="primary" disabled={busy || !title.trim()}>{busy ? 'Guardando…' : 'Guardar tarea'}</button></div>
+    </form>
+  </div>;
+}
+
+function App() {
+  const [auth, setAuth] = useState<boolean | null>(null);
+  const [view, setView] = useState<View>('home');
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const [taskModal, setTaskModal] = useState(false);
+  const [editing, setEditing] = useState<Task | undefined>();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [focusSessions, setFocusSessions] = useState<FocusSession[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const [t, p, s, a, f, fs] = await Promise.all([api.tasks(), api.projects(), api.dashboard(), api.activity(), api.attachments(), api.focusSessions()]);
+      const localFocusToday = fs.filter(x => x.duration_seconds && isToday(x.started_at)).reduce((sum, x) => sum + (x.duration_seconds || 0), 0);
+      setTasks(t); setProjects(p); setStats({ ...s, focusSecondsToday: localFocusToday }); setActivity(a); setAttachments(f); setFocusSessions(fs);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('401')) setAuth(false);
+    } finally { setLoading(false); }
+  }
+  useEffect(() => { api.me().then(r => { setAuth(r.authenticated); if (r.authenticated) load(); }).catch(() => setAuth(false)); }, []);
+  if (auth === null) return <div className="splash"><RefreshCw className="spin" /> Cargando workspace…</div>;
+  if (!auth) return <Login onLogin={() => { setAuth(true); load(); }} />;
+  const title = nav.find(n => n.id === view)?.label || 'Inicio';
+  function openTask(t?: Task) { setEditing(t); setTaskModal(true); }
+  async function moveTask(taskId: string, status: TaskStatus) { await api.updateTask(taskId, { status }); load(); }
+
+  return <div className="app-shell">
+    <aside className={`sidebar ${mobileMenu ? 'open' : ''}`}><div className="brand"><div className="brand-mark small"><CheckCircle2 /></div><div><strong>Personal</strong><span>Workspace</span></div></div><nav>{nav.map(item => { const I = item.icon; return <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => { setView(item.id); setMobileMenu(false); }}><I /><span>{item.label}</span></button>; })}</nav><button className="logout" onClick={async () => { await api.logout(); setAuth(false); }}><LogOut />Cerrar sesión</button></aside>
+    <section className="main"><header className="topbar"><button className="mobile-menu icon-button" onClick={() => setMobileMenu(v => !v)}><Menu /></button><div><span className="eyebrow">PERSONAL WORKSPACE · V0.1.2</span><h1>{title}</h1></div><div className="top-actions"><button className="ghost desktop-only" onClick={load}><RefreshCw className={loading ? 'spin' : ''} />Actualizar</button><button className="primary" onClick={() => openTask()}><Plus />Nueva tarea</button></div></header>
+      <main className="content">
+        {view === 'home' && <HomeView stats={stats} tasks={tasks} projects={projects} onOpenTask={openTask} onNavigate={setView} />}
+        {view === 'today' && <TaskList title="Mi día" subtitle="Lo que necesita tu atención hoy." tasks={tasks.filter(t => t.due_date === todayISO() && t.status !== 'done')} attachments={attachments} onEdit={openTask} onMove={moveTask} onDelete={async id => { await api.deleteTask(id); load(); }} />}
+        {view === 'tasks' && <TaskList title="Todas las tareas" subtitle="Busca, filtra y actualiza tu trabajo." tasks={tasks} attachments={attachments} onEdit={openTask} onMove={moveTask} onDelete={async id => { await api.deleteTask(id); load(); }} />}
+        {view === 'pipeline' && <Pipeline tasks={tasks} onMove={moveTask} onEdit={openTask} />}
+        {view === 'projects' && <Projects projects={projects} tasks={tasks} onCreated={load} />}
+        {view === 'calendar' && <Calendar tasks={tasks} />}
+        {view === 'focus' && <Focus tasks={tasks} sessions={focusSessions} onRefresh={load} />}
+        {view === 'routines' && <ComingSoon icon={Repeat2} title="Rutinas" text="La estructura ya está reservada. En V0.2 agregaremos recurrencias diarias, semanales y mensuales sin depender de servicios externos." />}
+        {view === 'files' && <Files attachments={attachments} tasks={tasks} projects={projects} onRefresh={load} />}
+        {view === 'automations' && <Automations />}
+        {view === 'activity' && <ActivityView items={activity} />}
+        {view === 'performance' && <Performance stats={stats} sessions={focusSessions} />}
+        {view === 'settings' && <SettingsView />}
+      </main>
+    </section>
+    <button className="fab" onClick={() => openTask()}><Plus /></button>
+    <nav className="mobile-tabs">{nav.slice(0, 5).map(item => { const I = item.icon; return <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => setView(item.id)}><I /><span>{item.label}</span></button>; })}</nav>
+    {taskModal && <TaskModal projects={projects} attachments={attachments} initial={editing} onClose={() => { setTaskModal(false); setEditing(undefined); }} onSaved={load} onFilesChanged={load} />}
+  </div>;
+}
+
+function HomeView({ stats, tasks, projects, onOpenTask, onNavigate }: { stats: DashboardStats | null; tasks: Task[]; projects: Project[]; onOpenTask: (t?: Task) => void; onNavigate: (v: View) => void }) {
+  const cards = [
+    { label: 'Tareas de hoy', value: stats?.today ?? 0, icon: CheckCircle2, go: 'today' as View },
+    { label: 'Pendientes', value: stats?.pending ?? 0, icon: Clock3, go: 'tasks' as View },
+    { label: 'En progreso', value: stats?.inProgress ?? 0, icon: Zap, go: 'pipeline' as View },
+    { label: 'Vencidas', value: stats?.overdue ?? 0, icon: AlertTriangle, go: 'tasks' as View },
+    { label: 'Focus hoy', value: formatTime(stats?.focusSecondsToday ?? 0), icon: Timer, go: 'focus' as View },
+    { label: 'Proyectos activos', value: stats?.activeProjects ?? 0, icon: FolderKanban, go: 'projects' as View },
+  ];
+  const priority = tasks.filter(t => t.status !== 'done').sort((a, b) => ({ high: 0, medium: 1, low: 2 }[a.priority] - { high: 0, medium: 1, low: 2 }[b.priority])).slice(0, 5);
+  return <><section className="welcome"><div><span className="eyebrow">HOY · {new Intl.DateTimeFormat('es-MX', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()).toUpperCase()}</span><h2>Tu trabajo, en un solo lugar.</h2><p>Prioriza lo importante, registra avances y mantén visible lo que sigue.</p></div><button className="primary" onClick={() => onOpenTask()}><CirclePlus />Captura rápida</button></section><div className="stats-grid">{cards.map(c => { const I = c.icon; return <button className="stat-card" key={c.label} onClick={() => onNavigate(c.go)}><div className="stat-icon"><I /></div><div><strong>{c.value}</strong><span>{c.label}</span></div><ChevronRight className="chev" /></button>; })}</div><div className="two-col"><section className="panel"><div className="panel-head"><div><span className="eyebrow">PRIORIDADES</span><h3>Siguiente trabajo</h3></div><button className="text-button" onClick={() => onNavigate('tasks')}>Ver todo</button></div><div className="stack">{priority.length ? priority.map(t => <button className="task-row" key={t.id} onClick={() => onOpenTask(t)}><span className={`priority-dot ${t.priority}`} /><div><strong>{t.title}</strong><span>{t.project_name || 'Sin proyecto'} · {formatDate(t.due_date)}</span></div><span className="status-pill">{statusMeta[t.status].label}</span></button>) : <Empty text="No hay tareas pendientes." />}</div></section><section className="panel"><div className="panel-head"><div><span className="eyebrow">PROYECTOS</span><h3>Activos</h3></div><button className="text-button" onClick={() => onNavigate('projects')}>Gestionar</button></div><div className="project-mini-grid">{projects.filter(p => p.status === 'active').slice(0, 4).map(p => { const total = tasks.filter(t => t.project_id === p.id).length, done = tasks.filter(t => t.project_id === p.id && t.status === 'done').length, pct = total ? Math.round(done / total * 100) : 0; return <div className="project-mini" key={p.id}><FolderKanban /><strong>{p.name}</strong><span>{done}/{total} tareas</span><div className="progress"><i style={{ width: `${pct}%` }} /></div></div>; })}{!projects.length && <Empty text="Crea tu primer proyecto." />}</div></section></div></>;
+}
+
+function TaskList({ title, subtitle, tasks, attachments, onEdit, onMove, onDelete }: { title: string; subtitle: string; tasks: Task[]; attachments: Attachment[]; onEdit: (t: Task) => void; onMove: (id: string, s: TaskStatus) => void; onDelete: (id: string) => void }) {
+  const [q, setQ] = useState('');
+  const [filter, setFilter] = useState<'all' | Priority>('all');
+  const visible = tasks.filter(t => (filter === 'all' || t.priority === filter) && (`${t.title} ${t.description || ''} ${t.project_name || ''}`).toLowerCase().includes(q.toLowerCase()));
+  return <section className="panel"><div className="panel-head wrap"><div><h2>{title}</h2><p>{subtitle}</p></div><div className="filters"><div className="search"><Search /><input value={q} onChange={e => setQ(e.target.value)} placeholder="Buscar tareas" /></div><select value={filter} onChange={e => setFilter(e.target.value as 'all' | Priority)}><option value="all">Todas las prioridades</option><option value="high">Alta</option><option value="medium">Media</option><option value="low">Baja</option></select></div></div><div className="task-table"><div className="task-head"><span>Tarea</span><span>Proyecto</span><span>Prioridad</span><span>Fecha</span><span>Estado</span><span /></div>{visible.map(t => { const fileCount = attachments.filter(a => a.task_id === t.id).length; return <div className="task-line" key={t.id}><button className="task-title" onClick={() => onEdit(t)}><span className={`priority-dot ${t.priority}`} /><span><strong>{t.title}</strong><small>{t.description || 'Sin descripción'}{fileCount > 0 && <span className="inline-file-count"><Paperclip />{fileCount}</span>}</small></span></button><span>{t.project_name || '—'}</span><span className={`priority-text ${t.priority}`}>{priorityLabel[t.priority]}</span><span>{formatDate(t.due_date)}</span><select value={t.status} onChange={e => onMove(t.id, e.target.value as TaskStatus)}>{Object.entries(statusMeta).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select><button className="icon-button danger" onClick={() => onDelete(t.id)}><Trash2 /></button></div>; })}{!visible.length && <Empty text="No encontramos tareas con esos filtros." />}</div></section>;
+}
+
+function Pipeline({ tasks, onMove, onEdit }: { tasks: Task[]; onMove: (id: string, s: TaskStatus) => void; onEdit: (t: Task) => void }) {
+  const cols = (Object.keys(statusMeta) as TaskStatus[]).filter(s => s !== 'done');
+  return <div className="kanban">{cols.map(status => { const meta = statusMeta[status], I = meta.icon, items = tasks.filter(t => t.status === status); return <section className="kanban-col" key={status} onDragOver={e => e.preventDefault()} onDrop={e => { const id = e.dataTransfer.getData('text/task'); if (id) onMove(id, status); }}><div className="kanban-head"><span><I />{meta.label}</span><b>{items.length}</b></div><div className="kanban-stack">{items.map(t => <button draggable onDragStart={e => e.dataTransfer.setData('text/task', t.id)} onClick={() => onEdit(t)} className="kanban-card" key={t.id}><span className={`priority-bar ${t.priority}`} /><strong>{t.title}</strong><small>{t.project_name || 'Sin proyecto'}</small><div><span>{formatDate(t.due_date)}</span><span className={`priority-text ${t.priority}`}>{priorityLabel[t.priority]}</span></div></button>)}{!items.length && <div className="drop-zone">Suelta tareas aquí</div>}</div></section>; })}</div>;
+}
+
+function Projects({ projects, tasks, onCreated }: { projects: Project[]; tasks: Task[]; onCreated: () => void }) {
+  const [name, setName] = useState(''); const [desc, setDesc] = useState(''); const [busy, setBusy] = useState(false);
+  async function create(e: React.FormEvent) { e.preventDefault(); if (!name.trim()) return; setBusy(true); try { await api.createProject({ name: name.trim(), description: desc.trim() || null }); setName(''); setDesc(''); onCreated(); } finally { setBusy(false); } }
+  return <div className="two-col projects-layout"><section className="panel"><div className="panel-head"><div><span className="eyebrow">PROYECTOS</span><h2>Espacios de trabajo</h2></div></div><div className="project-grid">{projects.map(p => { const all = tasks.filter(t => t.project_id === p.id), done = all.filter(t => t.status === 'done').length, pct = all.length ? Math.round(done / all.length * 100) : 0; return <article className="project-card" key={p.id}><div className="project-icon"><FolderKanban /></div><h3>{p.name}</h3><p>{p.description || 'Sin descripción.'}</p><div className="project-stats"><span>{all.length} tareas</span><span>{pct}%</span></div><div className="progress"><i style={{ width: `${pct}%` }} /></div></article>; })}{!projects.length && <Empty text="Aún no hay proyectos." />}</div></section><form className="panel form-panel" onSubmit={create}><span className="eyebrow">NUEVO PROYECTO</span><h3>Crear espacio</h3><label>Nombre<input value={name} onChange={e => setName(e.target.value)} placeholder="Ej. Marnez Academy" /></label><label>Descripción<textarea rows={4} value={desc} onChange={e => setDesc(e.target.value)} placeholder="Objetivo o contexto" /></label><button className="primary" disabled={busy || !name.trim()}><Plus />{busy ? 'Creando…' : 'Crear proyecto'}</button></form></div>;
+}
+
+function Calendar({ tasks }: { tasks: Task[] }) {
+  const dated = tasks.filter(t => t.due_date).sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
+  const groups = dated.reduce<Record<string, Task[]>>((a, t) => { (a[t.due_date!] ??= []).push(t); return a; }, {});
+  return <section className="panel"><div className="panel-head"><div><span className="eyebrow">AGENDA</span><h2>Próximas fechas</h2></div></div><div className="timeline">{Object.entries(groups).map(([d, items]) => <div className="timeline-day" key={d}><time>{new Intl.DateTimeFormat('es-MX', { weekday: 'short', day: 'numeric', month: 'short' }).format(new Date(`${d}T12:00:00`))}</time><div>{items.map(t => <div className="timeline-task" key={t.id}><span className={`priority-dot ${t.priority}`} /><strong>{t.title}</strong><span>{statusMeta[t.status].label}</span></div>)}</div></div>)}{!dated.length && <Empty text="Las tareas con fecha aparecerán aquí." />}</div></section>;
+}
+
+function Focus({ tasks, sessions, onRefresh }: { tasks: Task[]; sessions: FocusSession[]; onRefresh: () => void }) {
+  const [taskId, setTaskId] = useState('');
+  const [session, setSession] = useState<{ id: string; started: number } | null>(null);
+  const [seconds, setSeconds] = useState(0);
+  const tick = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (session) tick.current = window.setInterval(() => setSeconds(Math.floor((Date.now() - session.started) / 1000)), 1000);
+    return () => { if (tick.current !== undefined) window.clearInterval(tick.current); };
+  }, [session]);
+  async function start() {
+    const r = await api.focusStart(taskId || undefined);
+    setSeconds(0);
+    setSession({ id: r.id, started: Date.now() });
+  }
+  async function stop() {
+    if (!session) return;
+    await api.focusStop(session.id);
+    setSession(null); setSeconds(0); onRefresh();
+  }
+  const completed = sessions.filter(s => s.duration_seconds && s.ended_at);
+  const today = completed.filter(s => isToday(s.started_at));
+  const todaySeconds = today.reduce((sum, s) => sum + (s.duration_seconds || 0), 0);
+  return <div className="focus-layout">
+    <section className="focus-card"><div className="focus-icon"><Timer /></div><span className="eyebrow">FOCUS MODE</span><div className="focus-time">{String(Math.floor(seconds / 3600)).padStart(2, '0')}:{String(Math.floor(seconds % 3600 / 60)).padStart(2, '0')}:{String(seconds % 60).padStart(2, '0')}</div><select disabled={!!session} value={taskId} onChange={e => setTaskId(e.target.value)}><option value="">Sesión general</option>{tasks.filter(t => t.status !== 'done').map(t => <option key={t.id} value={t.id}>{t.title}</option>)}</select>{session ? <button className="danger-button" onClick={stop}><Square />Terminar sesión</button> : <button className="primary big" onClick={start}><Play />Iniciar enfoque</button>}<p>El cronómetro ahora empieza en 00:00:00 cuando Cloudflare confirma el inicio. Al terminar, el tiempo queda ligado a la tarea seleccionada.</p></section>
+    <section className="panel focus-history"><div className="panel-head"><div><span className="eyebrow">REGISTRO DE FOCUS</span><h2>Sesiones</h2></div></div><div className="focus-summary"><div><Timer /><span><strong>{formatTime(todaySeconds)}</strong><small>Focus de hoy</small></span></div><div><CheckCircle2 /><span><strong>{today.length}</strong><small>Sesiones hoy</small></span></div></div><div className="focus-list">{completed.slice(0, 12).map(s => <div className="focus-row" key={s.id}><div className="focus-row-icon"><Timer /></div><div><strong>{s.task_title || 'Sesión general'}</strong><span>{formatDateTime(s.started_at)}</span></div><b>{formatTime(s.duration_seconds || 0)}</b></div>)}{!completed.length && <Empty text="Cuando termines una sesión, aparecerá aquí con su duración y tarea." />}</div></section>
+  </div>;
+}
+
+function Files({ attachments, tasks, projects, onRefresh }: { attachments: Attachment[]; tasks: Task[]; projects: Project[]; onRefresh: () => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [projectId, setProjectId] = useState('');
+  const [taskId, setTaskId] = useState('');
+  const availableTasks = projectId ? tasks.filter(t => t.project_id === projectId) : tasks;
+  async function upload(file?: File) {
+    if (!file) return;
+    const task = tasks.find(t => t.id === taskId);
+    const effectiveProject = projectId || task?.project_id || undefined;
+    setBusy(true);
+    try { await api.upload(file, taskId || undefined, effectiveProject || undefined); onRefresh(); }
+    catch (e) { alert(e instanceof Error ? e.message : 'No se pudo subir'); }
+    finally { setBusy(false); if (ref.current) ref.current.value = ''; }
+  }
+  return <section className="panel"><div className="panel-head wrap"><div><span className="eyebrow">BIBLIOTECA CENTRAL</span><h2>Archivos</h2><p>Este apartado reúne todos tus adjuntos. Ahora también puedes ligarlos directamente a una tarea o proyecto.</p></div><div className="file-upload-controls"><select value={projectId} onChange={e => { setProjectId(e.target.value); setTaskId(''); }}><option value="">Proyecto opcional</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select><select value={taskId} onChange={e => { const id = e.target.value; setTaskId(id); const task = tasks.find(t => t.id === id); if (task?.project_id) setProjectId(task.project_id); }}><option value="">Tarea opcional</option>{availableTasks.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}</select><input hidden ref={ref} type="file" onChange={e => upload(e.target.files?.[0])} /><button className="primary" onClick={() => ref.current?.click()} disabled={busy}><Upload />{busy ? 'Subiendo…' : 'Subir archivo'}</button></div></div><div className="file-grid">{attachments.map(f => { const I = fileIcon(f.mime_type); const task = tasks.find(t => t.id === f.task_id), project = projects.find(p => p.id === f.project_id); return <article className="file-card" key={f.id}><div className="file-icon"><I /></div><div className="file-info"><strong>{f.name}</strong><span>{bytes(f.size_bytes)} · {task ? `Tarea: ${task.title}` : project ? `Proyecto: ${project.name}` : 'Biblioteca general'}</span></div><div className="file-actions"><a className="icon-button" href={`/api/files/${f.id}`} target="_blank" rel="noreferrer"><ChevronRight /></a><button className="icon-button danger" onClick={async () => { await api.deleteAttachment(f.id); onRefresh(); }}><Trash2 /></button></div></article>; })}{!attachments.length && <div className="upload-empty" onClick={() => ref.current?.click()}><Upload /><strong>Sube tu primer archivo</strong><span>Puedes ligarlo a una tarea o proyecto, o dejarlo en la biblioteca general.</span></div>}</div></section>;
+}
+
+function Automations() { return <div className="two-col"><section className="panel"><div className="panel-head"><div><span className="eyebrow">REGLAS</span><h2>Automatizaciones</h2></div></div><div className="automation-card"><div className="stat-icon"><Workflow /></div><div><strong>Cuando una tarea se complete</strong><span>Registrar automáticamente la actividad y actualizar métricas.</span></div><span className="status-pill">Activa</span></div><div className="automation-card"><div className="stat-icon"><AlertTriangle /></div><div><strong>Tareas vencidas</strong><span>El dashboard las detecta automáticamente según su fecha límite.</span></div><span className="status-pill">Activa</span></div></section><section className="panel"><span className="eyebrow">SIGUIENTE VERSIÓN</span><h3>Constructor de reglas</h3><p className="muted">En V0.2 podrás crear reglas CUANDO → SI → ENTONCES y recurrencias programadas con Cron.</p></section></div>; }
+
+function ActivityView({ items }: { items: ActivityItem[] }) { return <section className="panel"><div className="panel-head"><div><span className="eyebrow">BITÁCORA</span><h2>Actividad reciente</h2></div></div><div className="activity-list">{items.map(a => <div className="activity-row" key={a.id}><div className="activity-icon"><Activity /></div><div><strong>{a.message}</strong><span>{new Intl.DateTimeFormat('es-MX', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(a.created_at))}</span></div></div>)}{!items.length && <Empty text="Tu actividad aparecerá aquí automáticamente." />}</div></section>; }
+
+function Performance({ stats, sessions }: { stats: DashboardStats | null; sessions: FocusSession[] }) {
+  const weekAgo = Date.now() - 7 * 86400000;
+  const weekSessions = sessions.filter(s => s.duration_seconds && new Date(s.started_at).getTime() >= weekAgo);
+  const cards = [['Completadas esta semana', stats?.completedWeek ?? 0, CheckCircle2], ['Focus hoy', formatTime(stats?.focusSecondsToday ?? 0), Timer], ['Sesiones Focus · 7 días', weekSessions.length, History], ['Tareas vencidas', stats?.overdue ?? 0, AlertTriangle]] as const;
+  return <><div className="stats-grid performance">{cards.map(([l, v, I]) => <div className="stat-card static" key={l}><div className="stat-icon"><I /></div><div><strong>{v}</strong><span>{l}</span></div></div>)}</div><section className="panel"><div className="panel-head"><div><span className="eyebrow">DESEMPEÑO</span><h2>Indicadores reales de tu actividad</h2></div></div><p className="muted">Focus ya se registra por sesión y, cuando eliges una tarea, también actualiza el tiempo real acumulado de esa tarea. Conforme acumules datos agregaremos tendencias semanales y comparación estimado vs. real.</p></section></>;
+}
+
+function SettingsView() {
+  const [prompt, setPrompt] = useState('Organiza mis prioridades de trabajo para hoy en una lista breve y práctica.');
+  const [answer, setAnswer] = useState(''); const [busy, setBusy] = useState(false);
+  async function ask() { setBusy(true); try { const r = await api.aiAsk(prompt); setAnswer(r.text); } catch (e) { setAnswer(e instanceof Error ? e.message : 'Gemini no está configurado todavía.'); } finally { setBusy(false); } }
+  return <div className="two-col"><section className="panel"><span className="eyebrow">SISTEMA</span><h2>Arquitectura gratuita</h2><div className="settings-list"><div><Gauge /><span><strong>Cloudflare Workers</strong><small>Aplicación + API</small></span><b>Free</b></div><div><LayoutDashboard /><span><strong>D1</strong><small>Tareas, proyectos y métricas</small></span><b>Free</b></div><div><Paperclip /><span><strong>Workers KV</strong><small>Archivos adjuntos</small></span><b>Free</b></div><div><Sparkles /><span><strong>Gemini</strong><small>IA opcional mediante secreto</small></span><b>Opcional</b></div></div></section><section className="panel"><span className="eyebrow">PRUEBA DE IA</span><h3>Gemini</h3><textarea rows={4} value={prompt} onChange={e => setPrompt(e.target.value)} /><button className="primary" onClick={ask} disabled={busy}><Sparkles />{busy ? 'Consultando…' : 'Probar Gemini'}</button>{answer && <div className="ai-answer">{answer}</div>}</section></div>;
+}
+
+function ComingSoon({ icon: Icon, title, text }: { icon: typeof Repeat2; title: string; text: string }) { return <section className="empty-page"><div className="empty-big"><Icon /></div><h2>{title}</h2><p>{text}</p></section>; }
+function Empty({ text }: { text: string }) { return <div className="empty"><Inbox /><span>{text}</span></div>; }
+
+export default App;

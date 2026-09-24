@@ -1,0 +1,3 @@
+APP_PASSWORD=change-this-for-local-development
+SESSION_SECRET=replace-with-a-long-random-string
+GEMINI_API_KEY=your-gemini-key

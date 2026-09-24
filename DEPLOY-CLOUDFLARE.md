@@ -1,4 +1,4 @@
-# Despliegue rápido · Personal Workspace V0.1.1
+# Despliegue rápido · Personal Workspace V0.1.2
 
 ## 1. Sustituye los archivos del repositorio
 Sube el contenido de esta carpeta a `IsaacMarnez/personal-workspace` reemplazando la versión anterior.

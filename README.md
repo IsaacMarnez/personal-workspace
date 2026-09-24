@@ -1,4 +1,4 @@
-# Personal Workspace V0.1.1
+# Personal Workspace V0.1.2
 
 Organizador personal PWA construido con React + Cloudflare Workers + D1 + Workers KV + Gemini API opcional (Interactions API).
 
@@ -76,3 +76,14 @@ npm run deploy
 - Los IDs de D1 y KV no son secretos y sí pueden permanecer en `wrangler.jsonc`.
 - Los archivos se sirven a través de la API autenticada.
 - Gemini solo recibe el texto enviado explícitamente desde la función de IA.
+
+
+## Cambios incluidos en V0.1.2
+
+- Focus inicia visualmente en `00:00:00` al confirmar el inicio, sin heredar segundos de diferencia entre cliente y servidor.
+- Focus muestra historial de sesiones, duración, tarea relacionada y resumen del día.
+- Las sesiones Focus vinculadas a una tarea actualizan su tiempo real acumulado.
+- Los archivos pueden vincularse directamente a una tarea o a un proyecto.
+- Al editar una tarea se pueden subir, abrir y eliminar sus archivos adjuntos.
+- La vista global Archivos funciona como biblioteca central y permite elegir el proyecto/tarea antes de subir.
+- Las tareas muestran un indicador de cantidad de archivos adjuntos.
